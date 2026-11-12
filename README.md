@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/social-preview.png" alt="SnapCraft Chrome Screenshot Extension" width="100%" />
+</p>
+
 # SnapCraft — Chrome Screenshot & Annotation Extension (MVP)
 
 A lightweight, high-performance Chrome screenshot extension built with **React**, **TypeScript**, and **WXT** following **Manifest V3** best practices.
