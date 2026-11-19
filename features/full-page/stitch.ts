@@ -1,11 +1,11 @@
 import { ScrollStep, PageDimensions } from './scroll-controller';
+import { SliceItem, PageDimensionsData } from '../../types/screenshot';
 
 export interface SliceData {
-  step: ScrollStep;
+  step: ScrollStep | { index: number; y: number; isLast: boolean; overlapY: number };
   dataUrl: string;
 }
 
-// Maximum dimensions supported safely by modern browser Canvas implementations
 const MAX_CANVAS_DIMENSION = 32767;
 const MAX_CANVAS_AREA = 268435456; // 16384 * 16384
 
@@ -26,11 +26,16 @@ function loadImage(dataUrl: string): Promise<HTMLImageElement> {
  * Stitch multiple captured viewport slices into a single continuous full-page screenshot
  */
 export async function stitchSlices(
-  slices: SliceData[],
-  pageDim: PageDimensions
+  slices: Array<SliceData | SliceItem>,
+  pageDim: PageDimensions | PageDimensionsData
 ): Promise<string> {
   if (slices.length === 0) {
     throw new Error('No image slices provided for stitching');
+  }
+
+  // If single slice, return immediately
+  if (slices.length === 1) {
+    return slices[0].dataUrl;
   }
 
   // Load first image to determine device pixel scale
@@ -41,12 +46,7 @@ export async function stitchSlices(
   let physicalWidth = firstImg.naturalWidth;
   let physicalHeight = Math.round(pageDim.totalHeight * scaleY);
 
-  // If single slice
-  if (slices.length === 1) {
-    return slices[0].dataUrl;
-  }
-
-  // Handle canvas limit boundaries safely
+  // Handle canvas limits safely
   let downscale = 1;
   if (physicalHeight > MAX_CANVAS_DIMENSION) {
     downscale = MAX_CANVAS_DIMENSION / physicalHeight;
@@ -75,15 +75,18 @@ export async function stitchSlices(
     const slice = slices[i];
     const img = i === 0 ? firstImg : await loadImage(slice.dataUrl);
 
-    const { step } = slice;
+    // Support both SliceData and SliceItem structures
+    const isLast = 'step' in slice ? slice.step.isLast : slice.isLast;
+    const y = 'step' in slice ? slice.step.y : slice.y;
+    const overlapY = 'step' in slice ? slice.step.overlapY : slice.overlapY;
 
-    if (step.isLast && step.overlapY > 0) {
-      // Overlapping last slice
-      const sourceOffsetY = Math.round(step.overlapY * scaleY);
+    if (isLast && overlapY > 0) {
+      // Overlapping last slice: only draw bottom section
+      const sourceOffsetY = Math.round(overlapY * scaleY);
       const sourceHeight = img.naturalHeight - sourceOffsetY;
 
       const destX = 0;
-      const destY = Math.round((step.y + step.overlapY) * scaleY * downscale);
+      const destY = Math.round((y + overlapY) * scaleY * downscale);
       const destW = finalWidth;
       const destH = Math.round(sourceHeight * downscale);
 
@@ -103,7 +106,7 @@ export async function stitchSlices(
     } else {
       // Normal slice
       const destX = 0;
-      const destY = Math.round(step.y * scaleY * downscale);
+      const destY = Math.round(y * scaleY * downscale);
       const destW = finalWidth;
       const destH = Math.round(img.naturalHeight * downscale);
 

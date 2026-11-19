@@ -12,6 +12,22 @@ export interface CropRect {
   height: number;
 }
 
+export interface SliceItem {
+  index: number;
+  y: number;
+  isLast: boolean;
+  overlapY: number;
+  dataUrl: string;
+}
+
+export interface PageDimensionsData {
+  totalWidth: number;
+  totalHeight: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  devicePixelRatio: number;
+}
+
 export interface ScreenshotItem {
   id: string;
   dataUrl: string;
@@ -24,6 +40,8 @@ export interface ScreenshotItem {
   devicePixelRatio: number;
   timestamp: number;
   mode: CaptureMode;
+  slices?: SliceItem[];
+  pageDim?: PageDimensionsData;
 }
 
 export interface ScreenshotMetadata {

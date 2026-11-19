@@ -2,8 +2,19 @@ import { defineBackground } from 'wxt/sandbox';
 import { captureVisibleViewport, isRestrictedUrl } from '../features/visible-capture/capture';
 import { saveScreenshot, generateThumbnail } from '../services/db';
 import { getSettings } from '../services/storage';
-import { ScreenshotItem } from '../types/screenshot';
+import { ScreenshotItem, SliceItem, PageDimensionsData } from '../types/screenshot';
 import { ExtensionMessage } from '../types/messages';
+
+interface FullPageSession {
+  sessionId: string;
+  slices: SliceItem[];
+  pageDim?: PageDimensionsData;
+  title: string;
+  url: string;
+  hostname: string;
+}
+
+const activeSessions = new Map<string, FullPageSession>();
 
 export default defineBackground(() => {
   // --- KEYBOARD SHORTCUTS ---
@@ -71,29 +82,87 @@ export default defineBackground(() => {
 
           case 'CAPTURE_VIEWPORT_SLICE': {
             const targetWindowId = sender.tab?.windowId;
-            const dataUrl = await new Promise<string>((resolve, reject) => {
-              const callback = (data?: string) => {
-                if (chrome.runtime.lastError) {
-                  reject(new Error(chrome.runtime.lastError.message));
-                } else if (!data) {
-                  reject(new Error('captureVisibleTab returned empty data'));
-                } else {
-                  resolve(data);
-                }
-              };
-
-              if (typeof targetWindowId === 'number') {
-                chrome.tabs.captureVisibleTab(targetWindowId, { format: 'png' }, callback);
-              } else {
-                chrome.tabs.captureVisibleTab({ format: 'png' }, callback);
-              }
-            });
+            const dataUrl = await captureTabWithRetry(targetWindowId);
             sendResponse({ dataUrl });
             break;
           }
 
+          case 'FULL_PAGE_RECORD_SLICE': {
+            const { sessionId, index, y, isLast, overlapY } = message.payload as any;
+            const targetWindowId = sender.tab?.windowId;
+            const dataUrl = await captureTabWithRetry(targetWindowId);
+
+            let session = activeSessions.get(sessionId);
+            if (!session) {
+              session = {
+                sessionId,
+                slices: [],
+                title: sender.tab?.title || 'Full Page Screenshot',
+                url: sender.tab?.url || '',
+                hostname: sender.tab?.url ? new URL(sender.tab.url).hostname : 'webpage'
+              };
+              activeSessions.set(sessionId, session);
+            }
+
+            session.slices.push({
+              index,
+              y,
+              isLast,
+              overlapY,
+              dataUrl
+            });
+
+            sendResponse({ success: true, index });
+            break;
+          }
+
+          case 'FULL_PAGE_COMPLETE': {
+            const { sessionId, title, url, hostname, pageDim } = message.payload as any;
+            const session = activeSessions.get(sessionId);
+            if (!session || session.slices.length === 0) {
+              throw new Error('No captured slices found for full page session');
+            }
+
+            session.pageDim = pageDim;
+            session.title = title || session.title;
+            session.url = url || session.url;
+            session.hostname = hostname || session.hostname;
+
+            // Generate thumbnail from first slice
+            const firstSliceUrl = session.slices[0].dataUrl;
+            const thumb = await generateThumbnail(firstSliceUrl, 320);
+
+            const item: ScreenshotItem = {
+              id: sessionId,
+              dataUrl: '', // Slices will be stitched in editor tab
+              thumbnailUrl: thumb,
+              title: session.title,
+              url: session.url,
+              hostname: session.hostname,
+              width: Math.round(pageDim.totalWidth * pageDim.devicePixelRatio),
+              height: Math.round(pageDim.totalHeight * pageDim.devicePixelRatio),
+              devicePixelRatio: pageDim.devicePixelRatio,
+              timestamp: Date.now(),
+              mode: 'full-page',
+              slices: session.slices,
+              pageDim: session.pageDim
+            };
+
+            await saveScreenshot(item);
+            activeSessions.delete(sessionId);
+
+            const settings = await getSettings();
+            if (settings.openEditorAfterCapture) {
+              const editorUrl = chrome.runtime.getURL(`/editor.html?id=${sessionId}`);
+              await chrome.tabs.create({ url: editorUrl });
+            }
+
+            sendResponse({ success: true, id: sessionId });
+            break;
+          }
+
           case 'SAVE_SCREENSHOT_AND_OPEN': {
-            const payload = message.payload;
+            const payload = message.payload as any;
             if (!payload) throw new Error('No screenshot payload provided');
 
             const id = 'snap_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
@@ -143,9 +212,44 @@ export default defineBackground(() => {
       }
     })();
 
-    return true; // Keep message channel open for async response
+    return true; // Keep channel open for async responses
   });
 });
+
+/**
+ * Capture visible tab with automatic retry to prevent rate limit exceptions
+ */
+async function captureTabWithRetry(windowId?: number, retries = 3): Promise<string> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const callback = (data?: string) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (!data) {
+            reject(new Error('captureVisibleTab returned empty data'));
+          } else {
+            resolve(data);
+          }
+        };
+
+        if (typeof windowId === 'number') {
+          chrome.tabs.captureVisibleTab(windowId, { format: 'png' }, callback);
+        } else {
+          chrome.tabs.captureVisibleTab({ format: 'png' }, callback);
+        }
+      });
+      return dataUrl;
+    } catch (err) {
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 450));
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error('Capture failed after retries');
+}
 
 /**
  * Handle Visible Viewport Screenshot
@@ -199,16 +303,13 @@ async function handleStartAreaCapture(tabId: number): Promise<void> {
   }
 
   try {
-    // Send message to content script
     await chrome.tabs.sendMessage(tabId, { type: 'START_AREA_CAPTURE' });
   } catch (err) {
-    // Content script might need to be re-injected if page was loaded before extension
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ['content-scripts/content.js']
     });
-    // Wait briefly and retry
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 120));
     await chrome.tabs.sendMessage(tabId, { type: 'START_AREA_CAPTURE' });
   }
 }
@@ -227,12 +328,11 @@ async function handleStartFullPageCapture(tabId: number): Promise<void> {
   try {
     await chrome.tabs.sendMessage(tabId, { type: 'START_FULL_PAGE_CAPTURE' });
   } catch (err) {
-    // Inject and retry
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ['content-scripts/content.js']
     });
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 120));
     await chrome.tabs.sendMessage(tabId, { type: 'START_FULL_PAGE_CAPTURE' });
   }
 }

@@ -1,4 +1,4 @@
-import { CaptureMode, CropRect } from './screenshot';
+import { CaptureMode, CropRect, PageDimensionsData, SliceItem } from './screenshot';
 
 export type ExtensionMessageType =
   | 'PING'
@@ -11,6 +11,8 @@ export type ExtensionMessageType =
   | 'FULL_PAGE_PROGRESS'
   | 'FULL_PAGE_CANCEL'
   | 'CAPTURE_VIEWPORT_SLICE'
+  | 'FULL_PAGE_RECORD_SLICE'
+  | 'FULL_PAGE_COMPLETE'
   | 'SAVE_SCREENSHOT_AND_OPEN'
   | 'OPEN_EDITOR'
   | 'GET_PAGE_INFO';
@@ -66,6 +68,26 @@ export interface CaptureViewportSliceMessage extends BaseMessage<'CAPTURE_VIEWPO
   };
 }
 
+export interface FullPageRecordSlicePayload {
+  sessionId: string;
+  index: number;
+  y: number;
+  isLast: boolean;
+  overlapY: number;
+}
+
+export interface FullPageRecordSliceMessage extends BaseMessage<'FULL_PAGE_RECORD_SLICE', FullPageRecordSlicePayload> {}
+
+export interface FullPageCompletePayload {
+  sessionId: string;
+  title: string;
+  url: string;
+  hostname: string;
+  pageDim: PageDimensionsData;
+}
+
+export interface FullPageCompleteMessage extends BaseMessage<'FULL_PAGE_COMPLETE', FullPageCompletePayload> {}
+
 export interface SaveScreenshotPayload {
   mode: CaptureMode;
   dataUrl: string;
@@ -75,6 +97,8 @@ export interface SaveScreenshotPayload {
   url: string;
   hostname: string;
   devicePixelRatio: number;
+  slices?: SliceItem[];
+  pageDim?: PageDimensionsData;
 }
 
 export interface SaveScreenshotAndOpenMessage extends BaseMessage<'SAVE_SCREENSHOT_AND_OPEN', SaveScreenshotPayload> {}
@@ -92,5 +116,7 @@ export type ExtensionMessage =
   | FullPageProgressMessage
   | FullPageCancelMessage
   | CaptureViewportSliceMessage
+  | FullPageRecordSliceMessage
+  | FullPageCompleteMessage
   | SaveScreenshotAndOpenMessage
   | OpenEditorMessage;

@@ -2,7 +2,6 @@ import { defineContentScript } from 'wxt/sandbox';
 import { AreaSelector } from '../features/area-capture/overlay';
 import { cropViewportScreenshot } from '../features/area-capture/crop';
 import { ScrollCaptureController } from '../features/full-page/scroll-controller';
-import { stitchSlices, SliceData } from '../features/full-page/stitch';
 import { ExtensionMessage } from '../types/messages';
 
 export default defineContentScript({
@@ -63,7 +62,6 @@ export default defineContentScript({
               }
             },
             () => {
-              // User cancelled area selection
               chrome.runtime.sendMessage({ type: 'AREA_CANCELLED' });
             }
           );
@@ -86,14 +84,14 @@ export default defineContentScript({
             chrome.runtime.sendMessage({ type: 'FULL_PAGE_CANCEL' });
           });
 
-          // Run full page capture workflow asynchronously
+          // Run full-page capture workflow
           (async () => {
             try {
               if (!scrollController) return;
 
+              const sessionId = 'fullpage_' + Date.now();
               const dims = scrollController.getPageDimensions();
               const plan = scrollController.calculateScrollPlan(dims);
-              const slices: SliceData[] = [];
 
               for (let i = 0; i < plan.length; i++) {
                 if (scrollController.cancelled) break;
@@ -101,52 +99,53 @@ export default defineContentScript({
                 const step = plan[i];
 
                 // Scroll to target offset
-                await scrollController.scrollToPosition(step.y, 280);
+                await scrollController.scrollToPosition(step.y, 350);
 
-                // Hide sticky/fixed headers on subsequent slices so they don't repeat
+                // Hide sticky/fixed headers on subsequent slices
                 if (i > 0) {
                   scrollController.hideStickyAndFixedElements();
                 }
 
                 scrollController.updateProgress(i + 1, plan.length);
 
-                // Ask background to capture this viewport slice
-                const sliceRes = await chrome.runtime.sendMessage({ type: 'CAPTURE_VIEWPORT_SLICE' });
-                if (!sliceRes || !sliceRes.dataUrl) {
-                  throw new Error(`Failed to capture viewport slice ${i + 1}`);
+                // Tell background to record slice into session
+                const recRes = await chrome.runtime.sendMessage({
+                  type: 'FULL_PAGE_RECORD_SLICE',
+                  payload: {
+                    sessionId,
+                    index: step.index,
+                    y: step.y,
+                    isLast: step.isLast,
+                    overlapY: step.overlapY
+                  }
+                });
+
+                if (!recRes || !recRes.success) {
+                  throw new Error(recRes?.error || `Failed to record slice ${i + 1}`);
                 }
 
-                slices.push({
-                  step,
-                  dataUrl: sliceRes.dataUrl
-                });
+                // Throttle pause between slices to respect Chrome limits
+                await new Promise((r) => setTimeout(r, 200));
               }
 
               if (scrollController.cancelled) {
                 return;
               }
 
-              // Update widget
               scrollController.updateProgress(plan.length, plan.length);
 
-              // Stitch slices together
-              const stitchedDataUrl = await stitchSlices(slices, dims);
-
-              // Clean up page styles and scroll position
+              // Clean up styles and scroll position immediately
               scrollController.cleanup();
 
-              // Send result to background to save and open editor
+              // Tell background that all slices are captured
               await chrome.runtime.sendMessage({
-                type: 'SAVE_SCREENSHOT_AND_OPEN',
+                type: 'FULL_PAGE_COMPLETE',
                 payload: {
-                  mode: 'full-page',
-                  dataUrl: stitchedDataUrl,
-                  width: Math.round(dims.totalWidth * dims.devicePixelRatio),
-                  height: Math.round(dims.totalHeight * dims.devicePixelRatio),
+                  sessionId,
                   title: document.title || 'Full Page Screenshot',
                   url: window.location.href,
                   hostname: window.location.hostname,
-                  devicePixelRatio: dims.devicePixelRatio
+                  pageDim: dims
                 }
               });
             } catch (err: any) {

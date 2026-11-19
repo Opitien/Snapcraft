@@ -1,6 +1,18 @@
-import { CropRect } from '../../types/screenshot';
+import { CropRect, SliceItem, PageDimensionsData } from '../../types/screenshot';
+import { stitchSlices } from '../full-page/stitch';
 
-export type ToolType = 'select' | 'crop' | 'arrow' | 'rectangle' | 'text' | 'blur' | 'pen';
+export type ToolType =
+  | 'select'
+  | 'crop'
+  | 'rectangle'
+  | 'circle'
+  | 'arrow'
+  | 'line'
+  | 'pen'
+  | 'highlighter'
+  | 'text'
+  | 'blur'
+  | 'callout';
 
 export interface EditorState {
   activeTool: ToolType;
@@ -10,6 +22,7 @@ export interface EditorState {
   zoom: number;
   canUndo: boolean;
   canRedo: boolean;
+  stepNumber: number;
 }
 
 export class ScreenshotEditorEngine {
@@ -20,7 +33,8 @@ export class ScreenshotEditorEngine {
 
   private undoStack: ImageData[] = [];
   private redoStack: ImageData[] = [];
-  private maxHistory = 20;
+  private initialImageData: ImageData | null = null;
+  private maxHistory = 25;
 
   private isDrawing = false;
   private startX = 0;
@@ -31,14 +45,16 @@ export class ScreenshotEditorEngine {
   public cropRect: CropRect | null = null;
   public isCropping = false;
 
-  // Configuration
+  // Active configuration
   public tool: ToolType = 'select';
-  public color = '#ef4444'; // Red default
-  public strokeWidth = 3;
-  public fontSize = 18;
+  public color = '#ef4444';
+  public strokeWidth = 4;
+  public fontSize = 20;
   public zoom = 1;
+  public stepNumber = 1;
 
   public onStateChange: ((state: EditorState) => void) | null = null;
+  public onTextRequest: ((x: number, y: number, color: string, fontSize: number) => void) | null = null;
 
   constructor(baseCanvas: HTMLCanvasElement, previewCanvas: HTMLCanvasElement) {
     this.baseCanvas = baseCanvas;
@@ -55,7 +71,7 @@ export class ScreenshotEditorEngine {
   }
 
   /**
-   * Load base screenshot image
+   * Load base screenshot image from dataUrl
    */
   public async loadImage(dataUrl: string): Promise<{ width: number; height: number }> {
     return new Promise((resolve, reject) => {
@@ -70,7 +86,7 @@ export class ScreenshotEditorEngine {
         this.baseCtx.clearRect(0, 0, img.naturalWidth, img.naturalHeight);
         this.baseCtx.drawImage(img, 0, 0);
 
-        // Reset history
+        this.initialImageData = this.baseCtx.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
         this.undoStack = [];
         this.redoStack = [];
         this.saveHistorySnapshot();
@@ -84,20 +100,52 @@ export class ScreenshotEditorEngine {
   }
 
   /**
+   * Stitch full page slices directly on canvas
+   */
+  public async stitchAndLoadSlices(
+    slices: SliceItem[],
+    pageDim: PageDimensionsData
+  ): Promise<{ width: number; height: number; dataUrl: string }> {
+    const stitchedDataUrl = await stitchSlices(slices, pageDim);
+    const dims = await this.loadImage(stitchedDataUrl);
+    return { ...dims, dataUrl: stitchedDataUrl };
+  }
+
+  /**
+   * Reset canvas to original initial state
+   */
+  public resetToOriginal() {
+    if (!this.initialImageData) return;
+
+    this.baseCanvas.width = this.initialImageData.width;
+    this.baseCanvas.height = this.initialImageData.height;
+    this.previewCanvas.width = this.initialImageData.width;
+    this.previewCanvas.height = this.initialImageData.height;
+
+    this.baseCtx.putImageData(this.initialImageData, 0, 0);
+    this.clearPreview();
+    this.undoStack = [];
+    this.redoStack = [];
+    this.saveHistorySnapshot();
+    this.stepNumber = 1;
+    this.notifyStateChange();
+  }
+
+  /**
    * Push current base canvas state to Undo stack
    */
-  private saveHistorySnapshot() {
+  public saveHistorySnapshot() {
     const imgData = this.baseCtx.getImageData(0, 0, this.baseCanvas.width, this.baseCanvas.height);
     this.undoStack.push(imgData);
     if (this.undoStack.length > this.maxHistory) {
       this.undoStack.shift();
     }
-    this.redoStack = []; // Clear redo when a new action is performed
+    this.redoStack = [];
     this.notifyStateChange();
   }
 
   public undo() {
-    if (this.undoStack.length <= 1) return; // Keep initial state
+    if (this.undoStack.length <= 1) return;
 
     const currentState = this.undoStack.pop()!;
     this.redoStack.push(currentState);
@@ -110,6 +158,7 @@ export class ScreenshotEditorEngine {
 
     this.baseCtx.putImageData(prevState, 0, 0);
     this.clearPreview();
+    if (this.stepNumber > 1) this.stepNumber--;
     this.notifyStateChange();
   }
 
@@ -126,6 +175,7 @@ export class ScreenshotEditorEngine {
 
     this.baseCtx.putImageData(nextState, 0, 0);
     this.clearPreview();
+    this.stepNumber++;
     this.notifyStateChange();
   }
 
@@ -138,7 +188,8 @@ export class ScreenshotEditorEngine {
         fontSize: this.fontSize,
         zoom: this.zoom,
         canUndo: this.undoStack.length > 1,
-        canRedo: this.redoStack.length > 0
+        canRedo: this.redoStack.length > 0,
+        stepNumber: this.stepNumber
       });
     }
   }
@@ -155,7 +206,7 @@ export class ScreenshotEditorEngine {
     window.removeEventListener('mouseup', this.handleMouseUp);
   }
 
-  private getCanvasCoordinates(e: MouseEvent): { x: number; y: number } {
+  public getCanvasCoordinates(e: MouseEvent): { x: number; y: number } {
     const rect = this.previewCanvas.getBoundingClientRect();
     const scaleX = this.baseCanvas.width / rect.width;
     const scaleY = this.baseCanvas.height / rect.height;
@@ -174,8 +225,18 @@ export class ScreenshotEditorEngine {
     this.startX = coords.x;
     this.startY = coords.y;
 
-    if (this.tool === 'pen') {
+    if (this.tool === 'pen' || this.tool === 'highlighter') {
       this.penPoints = [{ x: coords.x, y: coords.y }];
+    } else if (this.tool === 'callout') {
+      this.drawCalloutBadge(this.baseCtx, coords.x, coords.y, this.stepNumber);
+      this.stepNumber++;
+      this.saveHistorySnapshot();
+      this.isDrawing = false;
+    } else if (this.tool === 'text') {
+      if (this.onTextRequest) {
+        this.onTextRequest(coords.x, coords.y, this.color, this.fontSize);
+      }
+      this.isDrawing = false;
     }
   };
 
@@ -192,15 +253,25 @@ export class ScreenshotEditorEngine {
       case 'rectangle':
         this.drawRectangle(this.previewCtx, this.startX, this.startY, coords.x, coords.y);
         break;
+      case 'circle':
+        this.drawCircle(this.previewCtx, this.startX, this.startY, coords.x, coords.y);
+        break;
       case 'arrow':
         this.drawArrow(this.previewCtx, this.startX, this.startY, coords.x, coords.y);
+        break;
+      case 'line':
+        this.drawLine(this.previewCtx, this.startX, this.startY, coords.x, coords.y);
         break;
       case 'blur':
         this.drawBlurPreview(coords.x, coords.y);
         break;
       case 'pen':
         this.penPoints.push({ x: coords.x, y: coords.y });
-        this.drawPenPath(this.previewCtx, this.penPoints);
+        this.drawPenPath(this.previewCtx, this.penPoints, false);
+        break;
+      case 'highlighter':
+        this.penPoints.push({ x: coords.x, y: coords.y });
+        this.drawPenPath(this.previewCtx, this.penPoints, true);
         break;
     }
   };
@@ -218,7 +289,7 @@ export class ScreenshotEditorEngine {
         const y = Math.min(this.startY, coords.y);
         const width = Math.abs(coords.x - this.startX);
         const height = Math.abs(coords.y - this.startY);
-        if (width > 10 && height > 10) {
+        if (width > 8 && height > 8) {
           this.cropRect = { x, y, width, height };
           this.isCropping = true;
           this.drawCropOverlay(this.cropRect);
@@ -229,8 +300,16 @@ export class ScreenshotEditorEngine {
         this.drawRectangle(this.baseCtx, this.startX, this.startY, coords.x, coords.y);
         this.saveHistorySnapshot();
         break;
+      case 'circle':
+        this.drawCircle(this.baseCtx, this.startX, this.startY, coords.x, coords.y);
+        this.saveHistorySnapshot();
+        break;
       case 'arrow':
         this.drawArrow(this.baseCtx, this.startX, this.startY, coords.x, coords.y);
+        this.saveHistorySnapshot();
+        break;
+      case 'line':
+        this.drawLine(this.baseCtx, this.startX, this.startY, coords.x, coords.y);
         this.saveHistorySnapshot();
         break;
       case 'blur':
@@ -239,12 +318,15 @@ export class ScreenshotEditorEngine {
         break;
       case 'pen':
         this.penPoints.push({ x: coords.x, y: coords.y });
-        this.drawPenPath(this.baseCtx, this.penPoints);
+        this.drawPenPath(this.baseCtx, this.penPoints, false);
         this.penPoints = [];
         this.saveHistorySnapshot();
         break;
-      case 'text':
-        this.promptAndDrawText(coords.x, coords.y);
+      case 'highlighter':
+        this.penPoints.push({ x: coords.x, y: coords.y });
+        this.drawPenPath(this.baseCtx, this.penPoints, true);
+        this.penPoints = [];
+        this.saveHistorySnapshot();
         break;
     }
   };
@@ -265,12 +347,45 @@ export class ScreenshotEditorEngine {
     ctx.strokeStyle = this.color;
     ctx.lineWidth = this.strokeWidth;
     ctx.lineJoin = 'round';
-    ctx.strokeRect(x, y, w, h);
+    ctx.beginPath();
+    ctx.roundRect ? ctx.roundRect(x, y, w, h, 6) : ctx.rect(x, y, w, h);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  private drawCircle(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number) {
+    const x = Math.min(x1, x2);
+    const y = Math.min(y1, y2);
+    const w = Math.abs(x2 - x1);
+    const h = Math.abs(y2 - y1);
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const rx = w / 2;
+    const ry = h / 2;
+
+    ctx.save();
+    ctx.strokeStyle = this.color;
+    ctx.lineWidth = this.strokeWidth;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  private drawLine(ctx: CanvasRenderingContext2D, fromX: number, fromY: number, toX: number, toY: number) {
+    ctx.save();
+    ctx.strokeStyle = this.color;
+    ctx.lineWidth = this.strokeWidth;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.lineTo(toX, toY);
+    ctx.stroke();
     ctx.restore();
   }
 
   private drawArrow(ctx: CanvasRenderingContext2D, fromX: number, fromY: number, toX: number, toY: number) {
-    const headlen = Math.max(12, this.strokeWidth * 3.5);
+    const headlen = Math.max(14, this.strokeWidth * 3.8);
     const angle = Math.atan2(toY - fromY, toX - fromX);
 
     ctx.save();
@@ -286,7 +401,7 @@ export class ScreenshotEditorEngine {
     ctx.lineTo(toX, toY);
     ctx.stroke();
 
-    // Arrow head
+    // Arrowhead
     ctx.beginPath();
     ctx.moveTo(toX, toY);
     ctx.lineTo(toX - headlen * Math.cos(angle - Math.PI / 6), toY - headlen * Math.sin(angle - Math.PI / 6));
@@ -297,12 +412,18 @@ export class ScreenshotEditorEngine {
     ctx.restore();
   }
 
-  private drawPenPath(ctx: CanvasRenderingContext2D, points: Array<{ x: number; y: number }>) {
+  private drawPenPath(ctx: CanvasRenderingContext2D, points: Array<{ x: number; y: number }>, isHighlighter: boolean) {
     if (points.length < 2) return;
 
     ctx.save();
-    ctx.strokeStyle = this.color;
-    ctx.lineWidth = this.strokeWidth;
+    if (isHighlighter) {
+      ctx.globalAlpha = 0.35;
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = Math.max(18, this.strokeWidth * 4.5);
+    } else {
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = this.strokeWidth;
+    }
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
@@ -315,26 +436,61 @@ export class ScreenshotEditorEngine {
     ctx.restore();
   }
 
-  private promptAndDrawText(x: number, y: number) {
-    const text = prompt('Enter annotation text:');
+  private drawCalloutBadge(ctx: CanvasRenderingContext2D, x: number, y: number, step: number) {
+    const radius = Math.max(14, this.fontSize * 0.75);
+
+    ctx.save();
+    // Shadow
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+    ctx.shadowBlur = 6;
+    ctx.shadowOffsetY = 2;
+
+    // Outer circle
+    ctx.fillStyle = this.color;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.shadowColor = 'transparent';
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Text number
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round(radius * 1.15)}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(step.toString(), x, y + 1);
+    ctx.restore();
+  }
+
+  /**
+   * Commit inline text directly onto base canvas
+   */
+  public commitText(text: string, x: number, y: number, textColor?: string, size?: number) {
     if (!text || text.trim() === '') return;
 
+    const chosenColor = textColor || this.color;
+    const chosenSize = size || this.fontSize;
+
     this.baseCtx.save();
-    this.baseCtx.font = `bold ${this.fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
-    this.baseCtx.fillStyle = this.color;
+    this.baseCtx.font = `bold ${chosenSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
 
-    // Draw subtle background pill for readability
     const metrics = this.baseCtx.measureText(text);
-    const pad = 4;
-    this.baseCtx.fillStyle = 'rgba(0, 0, 0, 0.65)';
-    this.baseCtx.fillRect(
-      x - pad,
-      y - this.fontSize,
-      metrics.width + pad * 2,
-      this.fontSize + pad * 2
-    );
+    const pad = 6;
 
-    this.baseCtx.fillStyle = this.color;
+    // High contrast backdrop pill
+    this.baseCtx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+    this.baseCtx.beginPath();
+    this.baseCtx.roundRect
+      ? this.baseCtx.roundRect(x - pad, y - chosenSize, metrics.width + pad * 2, chosenSize + pad * 2, 6)
+      : this.baseCtx.rect(x - pad, y - chosenSize, metrics.width + pad * 2, chosenSize + pad * 2);
+    this.baseCtx.fill();
+
+    // Text label
+    this.baseCtx.fillStyle = chosenColor;
+    this.baseCtx.textBaseline = 'bottom';
     this.baseCtx.fillText(text, x, y + pad);
     this.baseCtx.restore();
 
@@ -367,7 +523,6 @@ export class ScreenshotEditorEngine {
 
     if (w < 4 || h < 4) return;
 
-    // High quality pixelation mosaic
     const pixelFactor = 12;
     const sampleW = Math.max(1, Math.floor(w / pixelFactor));
     const sampleH = Math.max(1, Math.floor(h / pixelFactor));
@@ -378,10 +533,9 @@ export class ScreenshotEditorEngine {
     const offCtx = offscreen.getContext('2d');
     if (!offCtx) return;
 
-    // Step 1: Downscale selected area into tiny buffer
+    // Downscale and upscale with nearest-neighbor
     offCtx.drawImage(this.baseCanvas, x, y, w, h, 0, 0, sampleW, sampleH);
 
-    // Step 2: Draw back with nearest-neighbor scaling (pixelated mosaic)
     this.baseCtx.save();
     this.baseCtx.imageSmoothingEnabled = false;
     this.baseCtx.drawImage(offscreen, 0, 0, sampleW, sampleH, x, y, w, h);
@@ -397,7 +551,7 @@ export class ScreenshotEditorEngine {
     const h = Math.abs(y2 - y1);
 
     this.previewCtx.save();
-    this.previewCtx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    this.previewCtx.fillStyle = 'rgba(0, 0, 0, 0.5)';
     this.previewCtx.fillRect(0, 0, this.previewCanvas.width, this.previewCanvas.height);
     this.previewCtx.clearRect(x, y, w, h);
 
@@ -410,7 +564,7 @@ export class ScreenshotEditorEngine {
   public drawCropOverlay(rect: CropRect) {
     this.clearPreview();
     this.previewCtx.save();
-    this.previewCtx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    this.previewCtx.fillStyle = 'rgba(0, 0, 0, 0.5)';
     this.previewCtx.fillRect(0, 0, this.previewCanvas.width, this.previewCanvas.height);
     this.previewCtx.clearRect(rect.x, rect.y, rect.width, rect.height);
 

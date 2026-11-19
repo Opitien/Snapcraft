@@ -8,14 +8,20 @@ import {
   Redo2,
   Crop,
   Square,
+  Circle,
   ArrowUpRight,
+  Minus,
   Type,
   EyeOff,
   Pencil,
+  Highlighter,
+  ListOrdered,
   MousePointer,
   ZoomIn,
   ZoomOut,
-  Maximize2
+  Maximize2,
+  RotateCcw,
+  Sparkles
 } from 'lucide-react';
 import { ToolType } from '../../features/editor/canvas-engine';
 
@@ -23,16 +29,20 @@ interface EditorToolbarProps {
   filename: string;
   onFilenameChange: (name: string) => void;
   dimensions: { width: number; height: number };
+  mode?: string;
   activeTool: ToolType;
   onSelectTool: (tool: ToolType) => void;
   color: string;
   onChangeColor: (color: string) => void;
   strokeWidth: number;
   onChangeStrokeWidth: (width: number) => void;
+  fontSize: number;
+  onChangeFontSize: (size: number) => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
+  onReset: () => void;
   isCropping: boolean;
   onApplyCrop: () => void;
   onCancelCrop: () => void;
@@ -41,35 +51,44 @@ interface EditorToolbarProps {
   zoom: number;
   onZoomIn: () => void;
   onZoomOut: () => void;
+  onFitScreen: () => void;
   onResetZoom: () => void;
   onBack: () => void;
+  stepNumber?: number;
 }
 
 const COLORS = [
   { name: 'Red', hex: '#ef4444' },
-  { name: 'Blue', hex: '#2563eb' },
+  { name: 'Blue', hex: '#3b82f6' },
   { name: 'Emerald', hex: '#10b981' },
   { name: 'Amber', hex: '#f59e0b' },
-  { name: 'Black', hex: '#0f172a' },
+  { name: 'Purple', hex: '#8b5cf6' },
+  { name: 'Pink', hex: '#ec4899' },
+  { name: 'Dark Slate', hex: '#0f172a' },
   { name: 'White', hex: '#ffffff' }
 ];
 
 const STROKE_WIDTHS = [2, 4, 8];
+const FONT_SIZES = [14, 18, 24, 32];
 
 export const EditorToolbar: React.FC<EditorToolbarProps> = ({
   filename,
   onFilenameChange,
   dimensions,
+  mode,
   activeTool,
   onSelectTool,
   color,
   onChangeColor,
   strokeWidth,
   onChangeStrokeWidth,
+  fontSize,
+  onChangeFontSize,
   canUndo,
   canRedo,
   onUndo,
   onRedo,
+  onReset,
   isCropping,
   onApplyCrop,
   onCancelCrop,
@@ -78,8 +97,10 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
   zoom,
   onZoomIn,
   onZoomOut,
+  onFitScreen,
   onResetZoom,
-  onBack
+  onBack,
+  stepNumber = 1
 }) => {
   const [copied, setCopied] = useState(false);
 
@@ -92,180 +113,256 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
   };
 
   return (
-    <header className="bg-white border-b border-slate-200 select-none shadow-sm sticky top-0 z-40">
-      {/* Top Primary Bar */}
-      <div className="flex items-center justify-between px-4 py-2.5">
-        <div className="flex items-center space-x-3">
+    <header className="bg-slate-900 text-white select-none shadow-md sticky top-0 z-40 border-b border-slate-800">
+      {/* Top Main Navigation & Tool Island */}
+      <div className="flex items-center justify-between px-4 py-2.5 gap-2">
+        {/* Left: Back & Filename & Dimensions */}
+        <div className="flex items-center space-x-3 shrink-0">
           <button
             onClick={onBack}
-            className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors flex items-center space-x-1"
+            className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors flex items-center space-x-1"
             title="Back / Close"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span className="text-xs font-medium hidden sm:inline">Back</span>
+            <span className="text-xs font-medium hidden md:inline">Back</span>
           </button>
 
-          <div className="h-5 w-px bg-slate-200" />
+          <div className="h-5 w-px bg-slate-800" />
 
-          {/* Filename Input */}
           <div className="flex items-center space-x-2">
             <input
               type="text"
               value={filename}
               onChange={(e) => onFilenameChange(e.target.value)}
-              className="text-sm font-semibold text-slate-800 border border-transparent hover:border-slate-300 focus:border-blue-500 focus:bg-white rounded-md px-2 py-1 max-w-[220px] truncate outline-none transition-all"
+              className="text-xs font-semibold text-slate-200 bg-slate-800/80 hover:bg-slate-800 border border-slate-700 focus:border-blue-500 rounded-md px-2.5 py-1 max-w-[190px] truncate outline-none transition-all"
               placeholder="screenshot.png"
             />
-            <span className="text-[11px] font-mono text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full">
+            <span className="text-[11px] font-mono text-slate-400 bg-slate-800 border border-slate-700/80 px-2 py-0.5 rounded-full">
               {dimensions.width} × {dimensions.height} px
             </span>
+            {mode && (
+              <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-blue-900/60 text-blue-300 border border-blue-700/50 hidden sm:inline-block">
+                {mode}
+              </span>
+            )}
           </div>
         </div>
 
-        {/* Center: Tools */}
-        <div className="flex items-center space-x-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200">
+        {/* Center: Sleek Tool Island */}
+        <div className="flex items-center space-x-1 bg-slate-800/90 p-1 rounded-xl border border-slate-700/80 shadow-inner overflow-x-auto">
+          {/* Select / Hand */}
           <button
             onClick={() => onSelectTool('select')}
-            className={`p-1.5 rounded-lg text-xs font-medium flex items-center space-x-1 transition-all ${
+            className={`p-1.5 rounded-lg text-xs font-medium transition-all ${
               activeTool === 'select'
-                ? 'bg-white text-blue-600 shadow-sm font-semibold'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-700'
             }`}
-            title="Select / View"
+            title="Select & Pan (V)"
           >
             <MousePointer className="w-3.5 h-3.5" />
           </button>
 
+          {/* Crop */}
           <button
             onClick={() => onSelectTool('crop')}
-            className={`p-1.5 rounded-lg text-xs font-medium flex items-center space-x-1 transition-all ${
+            className={`p-1.5 rounded-lg text-xs font-medium transition-all ${
               activeTool === 'crop'
-                ? 'bg-white text-blue-600 shadow-sm font-semibold'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-700'
             }`}
-            title="Crop Image"
+            title="Crop Image (C)"
           >
             <Crop className="w-3.5 h-3.5" />
           </button>
 
-          <div className="h-4 w-px bg-slate-300 mx-0.5" />
+          <div className="h-4 w-px bg-slate-700 mx-0.5" />
 
+          {/* Rectangle */}
           <button
             onClick={() => onSelectTool('rectangle')}
-            className={`p-1.5 rounded-lg text-xs font-medium flex items-center space-x-1 transition-all ${
+            className={`p-1.5 rounded-lg text-xs font-medium transition-all ${
               activeTool === 'rectangle'
-                ? 'bg-white text-blue-600 shadow-sm font-semibold'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-700'
             }`}
-            title="Draw Rectangle"
+            title="Rectangle (R)"
           >
             <Square className="w-3.5 h-3.5" />
           </button>
 
+          {/* Circle */}
+          <button
+            onClick={() => onSelectTool('circle')}
+            className={`p-1.5 rounded-lg text-xs font-medium transition-all ${
+              activeTool === 'circle'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-700'
+            }`}
+            title="Circle / Ellipse (O)"
+          >
+            <Circle className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Arrow */}
           <button
             onClick={() => onSelectTool('arrow')}
-            className={`p-1.5 rounded-lg text-xs font-medium flex items-center space-x-1 transition-all ${
+            className={`p-1.5 rounded-lg text-xs font-medium transition-all ${
               activeTool === 'arrow'
-                ? 'bg-white text-blue-600 shadow-sm font-semibold'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-700'
             }`}
-            title="Draw Arrow"
+            title="Arrow (A)"
           >
             <ArrowUpRight className="w-3.5 h-3.5" />
           </button>
 
+          {/* Line */}
+          <button
+            onClick={() => onSelectTool('line')}
+            className={`p-1.5 rounded-lg text-xs font-medium transition-all ${
+              activeTool === 'line'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-700'
+            }`}
+            title="Straight Line (L)"
+          >
+            <Minus className="w-3.5 h-3.5" />
+          </button>
+
+          <div className="h-4 w-px bg-slate-700 mx-0.5" />
+
+          {/* Pen */}
           <button
             onClick={() => onSelectTool('pen')}
-            className={`p-1.5 rounded-lg text-xs font-medium flex items-center space-x-1 transition-all ${
+            className={`p-1.5 rounded-lg text-xs font-medium transition-all ${
               activeTool === 'pen'
-                ? 'bg-white text-blue-600 shadow-sm font-semibold'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-700'
             }`}
-            title="Freehand Pencil"
+            title="Freehand Pen (P)"
           >
             <Pencil className="w-3.5 h-3.5" />
           </button>
 
+          {/* Highlighter */}
+          <button
+            onClick={() => onSelectTool('highlighter')}
+            className={`p-1.5 rounded-lg text-xs font-medium transition-all ${
+              activeTool === 'highlighter'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-700'
+            }`}
+            title="Highlighter (H)"
+          >
+            <Highlighter className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Text */}
           <button
             onClick={() => onSelectTool('text')}
-            className={`p-1.5 rounded-lg text-xs font-medium flex items-center space-x-1 transition-all ${
+            className={`p-1.5 rounded-lg text-xs font-medium transition-all ${
               activeTool === 'text'
-                ? 'bg-white text-blue-600 shadow-sm font-semibold'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-700'
             }`}
-            title="Add Text"
+            title="Text Label (T)"
           >
             <Type className="w-3.5 h-3.5" />
           </button>
 
+          {/* Step Callout */}
+          <button
+            onClick={() => onSelectTool('callout')}
+            className={`p-1.5 rounded-lg text-xs font-medium transition-all flex items-center space-x-1 ${
+              activeTool === 'callout'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-700'
+            }`}
+            title={`Numbered Step Callout (Next: #${stepNumber})`}
+          >
+            <ListOrdered className="w-3.5 h-3.5" />
+            <span className="text-[10px] font-bold bg-white/20 px-1 rounded-full">{stepNumber}</span>
+          </button>
+
+          {/* Blur / Redact */}
           <button
             onClick={() => onSelectTool('blur')}
-            className={`p-1.5 rounded-lg text-xs font-medium flex items-center space-x-1 transition-all ${
+            className={`p-1.5 rounded-lg text-xs font-medium transition-all ${
               activeTool === 'blur'
-                ? 'bg-white text-blue-600 shadow-sm font-semibold'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-700'
             }`}
-            title="Blur / Redact Sensitive Area"
+            title="Blur / Redact Sensitive Area (B)"
           >
             <EyeOff className="w-3.5 h-3.5" />
           </button>
 
-          <div className="h-4 w-px bg-slate-300 mx-0.5" />
+          <div className="h-4 w-px bg-slate-700 mx-0.5" />
 
-          {/* Undo / Redo */}
+          {/* Undo */}
           <button
             onClick={onUndo}
             disabled={!canUndo}
-            className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white/60 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            title="Undo"
+            className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-700 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title="Undo (Ctrl+Z)"
           >
             <Undo2 className="w-3.5 h-3.5" />
           </button>
 
+          {/* Redo */}
           <button
             onClick={onRedo}
             disabled={!canRedo}
-            className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white/60 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            title="Redo"
+            className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-700 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title="Redo (Ctrl+Y)"
           >
             <Redo2 className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Revert to Original */}
+          <button
+            onClick={onReset}
+            className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-slate-700 rounded-lg transition-colors"
+            title="Reset All Edits to Original"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
           </button>
         </div>
 
         {/* Right: Actions */}
-        <div className="flex items-center space-x-2">
-          {isCropping ? (
-            <div className="flex items-center space-x-1.5 bg-blue-50 border border-blue-200 px-2.5 py-1 rounded-lg">
-              <span className="text-xs font-medium text-blue-700">Crop Active:</span>
+        <div className="flex items-center space-x-2 shrink-0">
+          {isCropping && (
+            <div className="flex items-center space-x-1.5 bg-blue-950/80 border border-blue-700/60 px-2 py-1 rounded-lg">
               <button
                 onClick={onApplyCrop}
-                className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-2.5 py-1 rounded font-medium flex items-center space-x-1 shadow-sm"
+                className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-2.5 py-1 rounded font-semibold flex items-center space-x-1 shadow-sm transition-all"
               >
                 <Check className="w-3.5 h-3.5" />
-                <span>Apply</span>
+                <span>Apply Crop</span>
               </button>
               <button
                 onClick={onCancelCrop}
-                className="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs px-2 py-1 rounded font-medium"
+                className="bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs px-2 py-1 rounded font-medium transition-all"
               >
                 Cancel
               </button>
             </div>
-          ) : null}
+          )}
 
           <button
             onClick={handleCopyClick}
-            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:border-slate-400 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium transition-all shadow-sm active:scale-95"
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition-all active:scale-95 shadow-sm"
             title="Copy to Clipboard"
           >
             {copied ? (
               <>
-                <Check className="w-3.5 h-3.5 text-emerald-600" />
-                <span className="text-emerald-700 font-semibold">Copied!</span>
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="text-emerald-300 font-semibold">Copied!</span>
               </>
             ) : (
               <>
-                <Copy className="w-3.5 h-3.5 text-slate-500" />
+                <Copy className="w-3.5 h-3.5 text-slate-300" />
                 <span>Copy</span>
               </>
             )}
@@ -273,28 +370,29 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
 
           <button
             onClick={onDownload}
-            className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-all shadow-sm active:scale-95"
-            title="Download PNG"
+            className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition-all shadow-md active:scale-95"
+            title="Download PNG Screenshot"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Download PNG</span>
+            <span>Download</span>
           </button>
         </div>
       </div>
 
-      {/* Sub-toolbar for styling attributes (Color & Stroke Width & Zoom) */}
-      <div className="flex items-center justify-between px-4 py-1.5 bg-slate-50/70 border-t border-slate-100 text-xs text-slate-600">
+      {/* Sub-toolbar: Colors, Line thickness, Font size, and Screen Fitting Controls */}
+      <div className="flex items-center justify-between px-4 py-1.5 bg-slate-950 border-t border-slate-800/80 text-xs text-slate-400">
+        {/* Left: Color Palette & Sizing */}
         <div className="flex items-center space-x-4">
           {/* Colors */}
           <div className="flex items-center space-x-1.5">
-            <span className="text-[11px] font-medium text-slate-500">Color:</span>
-            <div className="flex items-center space-x-1">
+            <span className="text-[11px] font-medium text-slate-400">Color:</span>
+            <div className="flex items-center space-x-1.5">
               {COLORS.map((c) => (
                 <button
                   key={c.hex}
                   onClick={() => onChangeColor(c.hex)}
-                  className={`w-4 h-4 rounded-full border border-slate-300 transition-transform ${
-                    color === c.hex ? 'scale-125 ring-2 ring-blue-500 ring-offset-1' : 'hover:scale-110'
+                  className={`w-4 h-4 rounded-full border border-slate-600 transition-all ${
+                    color === c.hex ? 'scale-125 ring-2 ring-blue-500 ring-offset-1 ring-offset-slate-900' : 'hover:scale-110'
                   }`}
                   style={{ backgroundColor: c.hex }}
                   title={c.name}
@@ -303,20 +401,20 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
             </div>
           </div>
 
-          <div className="h-3 w-px bg-slate-200" />
+          <div className="h-3 w-px bg-slate-800" />
 
-          {/* Stroke Widths */}
+          {/* Stroke Width */}
           <div className="flex items-center space-x-1.5">
-            <span className="text-[11px] font-medium text-slate-500">Thickness:</span>
+            <span className="text-[11px] font-medium text-slate-400">Stroke:</span>
             <div className="flex items-center space-x-1">
               {STROKE_WIDTHS.map((sw) => (
                 <button
                   key={sw}
                   onClick={() => onChangeStrokeWidth(sw)}
-                  className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all ${
                     strokeWidth === sw
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                      ? 'bg-blue-600 text-white border-blue-500'
+                      : 'bg-slate-800 text-slate-300 border-slate-700 hover:border-slate-600'
                   }`}
                 >
                   {sw}px
@@ -324,34 +422,75 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
               ))}
             </div>
           </div>
+
+          {activeTool === 'text' && (
+            <>
+              <div className="h-3 w-px bg-slate-800" />
+              <div className="flex items-center space-x-1.5">
+                <span className="text-[11px] font-medium text-slate-400">Font:</span>
+                <div className="flex items-center space-x-1">
+                  {FONT_SIZES.map((sz) => (
+                    <button
+                      key={sz}
+                      onClick={() => onChangeFontSize(sz)}
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all ${
+                        fontSize === sz
+                          ? 'bg-blue-600 text-white border-blue-500'
+                          : 'bg-slate-800 text-slate-300 border-slate-700 hover:border-slate-600'
+                      }`}
+                    >
+                      {sz}px
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
-        {/* Zoom Controls */}
-        <div className="flex items-center space-x-1">
+        {/* Right: Screen Fitting & Zoom Controls */}
+        <div className="flex items-center space-x-2">
+          {/* Fit to Screen Button */}
           <button
-            onClick={onZoomOut}
-            className="p-1 text-slate-500 hover:text-slate-800 rounded hover:bg-slate-200/60"
-            title="Zoom Out"
+            onClick={onFitScreen}
+            className="flex items-center space-x-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-all shadow-sm"
+            title="Auto-Fit Screenshot to Screen"
           >
-            <ZoomOut className="w-3.5 h-3.5" />
+            <Maximize2 className="w-3.5 h-3.5 text-blue-400" />
+            <span>Fit Screen</span>
           </button>
-          <span className="font-mono text-[11px] px-1 text-slate-600 min-w-[42px] text-center">
-            {Math.round(zoom * 100)}%
-          </span>
-          <button
-            onClick={onZoomIn}
-            className="p-1 text-slate-500 hover:text-slate-800 rounded hover:bg-slate-200/60"
-            title="Zoom In"
-          >
-            <ZoomIn className="w-3.5 h-3.5" />
-          </button>
+
+          {/* 100% Actual Size Button */}
           <button
             onClick={onResetZoom}
-            className="p-1 text-slate-500 hover:text-slate-800 rounded hover:bg-slate-200/60"
-            title="Reset Zoom to 100%"
+            className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-medium transition-all"
+            title="Reset to 100% Actual Size"
           >
-            <Maximize2 className="w-3.5 h-3.5" />
+            100%
           </button>
+
+          <div className="h-3 w-px bg-slate-800" />
+
+          {/* Zoom stepper */}
+          <div className="flex items-center space-x-1 bg-slate-800/80 border border-slate-700 rounded-lg px-1.5 py-0.5">
+            <button
+              onClick={onZoomOut}
+              className="p-1 text-slate-300 hover:text-white rounded hover:bg-slate-700"
+              title="Zoom Out (-)"
+            >
+              <ZoomOut className="w-3 h-3" />
+            </button>
+            <span className="font-mono text-[11px] px-1 text-slate-200 min-w-[38px] text-center font-medium">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              onClick={onZoomIn}
+              className="p-1 text-slate-300 hover:text-white rounded hover:bg-slate-700"
+              title="Zoom In (+)"
+            >
+              <ZoomIn className="w-3 h-3" />
+            </button>
+          </div>
         </div>
       </div>
     </header>

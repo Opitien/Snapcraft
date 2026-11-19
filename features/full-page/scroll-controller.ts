@@ -1,10 +1,6 @@
-export interface PageDimensions {
-  totalWidth: number;
-  totalHeight: number;
-  viewportWidth: number;
-  viewportHeight: number;
-  devicePixelRatio: number;
-}
+import { PageDimensionsData } from '../../types/screenshot';
+
+export interface PageDimensions extends PageDimensionsData {}
 
 export interface ScrollStep {
   index: number;
@@ -17,7 +13,7 @@ export interface ScrollStep {
 export class ScrollCaptureController {
   private originalScrollX = 0;
   private originalScrollY = 0;
-  private hiddenFixedElements: Array<{ el: HTMLElement; origVisibility: string }> = [];
+  private hiddenFixedElements: Array<{ el: HTMLElement; origVisibility: string; origOpacity: string }> = [];
   private progressWidget: HTMLDivElement | null = null;
   private isCancelled = false;
   private onCancelCallback: (() => void) | null = null;
@@ -31,17 +27,16 @@ export class ScrollCaptureController {
 
     const totalWidth = Math.max(
       doc.scrollWidth,
-      body.scrollWidth,
+      body ? body.scrollWidth : 0,
       doc.offsetWidth,
-      body.offsetWidth,
       doc.clientWidth
     );
 
     const totalHeight = Math.max(
       doc.scrollHeight,
-      body.scrollHeight,
+      body ? body.scrollHeight : 0,
       doc.offsetHeight,
-      body.offsetHeight,
+      body ? body.offsetHeight : 0,
       doc.clientHeight
     );
 
@@ -64,32 +59,64 @@ export class ScrollCaptureController {
   public initialize(onCancel: () => void) {
     this.isCancelled = false;
     this.onCancelCallback = onCancel;
-    this.originalScrollX = window.scrollX;
-    this.originalScrollY = window.scrollY;
+    this.originalScrollX = window.scrollX || window.pageXOffset || 0;
+    this.originalScrollY = window.scrollY || window.pageYOffset || 0;
 
     this.createProgressWidget();
   }
 
   /**
-   * Temporarily hide sticky and fixed elements after first slice
+   * Target and temporarily hide sticky and fixed navigation elements after first slice
+   * Uses targeted queries instead of querying every DOM node for high performance.
    */
   public hideStickyAndFixedElements() {
-    this.hiddenFixedElements = [];
-    const elements = Array.from(document.querySelectorAll<HTMLElement>('*'));
+    if (this.hiddenFixedElements.length > 0) return; // already hidden
 
-    for (const el of elements) {
-      // Skip our own UI widget
+    const candidates = new Set<HTMLElement>();
+
+    // Target common headers and fixed navigation candidates
+    const selectors = [
+      'header',
+      'nav',
+      '[class*="header"]',
+      '[class*="navbar"]',
+      '[class*="sticky"]',
+      '[class*="fixed"]',
+      '[class*="topbar"]',
+      '[style*="position: fixed"]',
+      '[style*="position: sticky"]'
+    ];
+
+    try {
+      document.querySelectorAll<HTMLElement>(selectors.join(',')).forEach((el) => candidates.add(el));
+      // Also check top-level body children
+      if (document.body) {
+        Array.from(document.body.children).forEach((child) => {
+          if (child instanceof HTMLElement) candidates.add(child);
+        });
+      }
+    } catch {
+      // Fallback
+    }
+
+    for (const el of candidates) {
       if (el.id === 'snapcraft-progress-widget' || el.closest('#snapcraft-progress-widget')) {
         continue;
       }
 
-      const style = window.getComputedStyle(el);
-      if (style.position === 'fixed' || style.position === 'sticky') {
-        this.hiddenFixedElements.push({
-          el,
-          origVisibility: el.style.visibility
-        });
-        el.style.visibility = 'hidden';
+      try {
+        const style = window.getComputedStyle(el);
+        if (style.position === 'fixed' || style.position === 'sticky') {
+          this.hiddenFixedElements.push({
+            el,
+            origVisibility: el.style.visibility,
+            origOpacity: el.style.opacity
+          });
+          el.style.visibility = 'hidden';
+          el.style.opacity = '0';
+        }
+      } catch {
+        // Skip un-computable element
       }
     }
   }
@@ -100,6 +127,7 @@ export class ScrollCaptureController {
   public restoreStickyAndFixedElements() {
     for (const item of this.hiddenFixedElements) {
       item.el.style.visibility = item.origVisibility;
+      item.el.style.opacity = item.origOpacity;
     }
     this.hiddenFixedElements = [];
   }
@@ -125,14 +153,17 @@ export class ScrollCaptureController {
     let currentY = 0;
     let stepIndex = 0;
 
-    while (currentY < totalHeight) {
-      const isLast = currentY + viewportHeight >= totalHeight;
+    // To prevent infinite captures on extreme pages, cap at 30 slices (~30,000px)
+    const MAX_STEPS = 30;
+
+    while (currentY < totalHeight && stepIndex < MAX_STEPS) {
+      const isLast = (currentY + viewportHeight >= totalHeight) || (stepIndex === MAX_STEPS - 1);
       const targetY = isLast ? Math.max(0, totalHeight - viewportHeight) : currentY;
-      const overlapY = (stepIndex > 0 && isLast) ? (currentY - targetY) : 0;
+      const overlapY = (stepIndex > 0 && isLast) ? Math.max(0, currentY - targetY) : 0;
 
       steps.push({
         index: stepIndex,
-        totalSteps: 0, // populated after loop
+        totalSteps: 0,
         y: targetY,
         isLast,
         overlapY
@@ -151,7 +182,7 @@ export class ScrollCaptureController {
   /**
    * Scroll to specified Y offset and wait for content/lazy images to render
    */
-  public async scrollToPosition(y: number, waitMs = 280): Promise<void> {
+  public async scrollToPosition(y: number, waitMs = 350): Promise<void> {
     if (this.isCancelled) throw new Error('Capture cancelled by user');
 
     window.scrollTo({
@@ -160,10 +191,14 @@ export class ScrollCaptureController {
       behavior: 'instant' as ScrollBehavior
     });
 
+    if (document.scrollingElement) {
+      document.scrollingElement.scrollTop = y;
+    }
+
     // Wait for DOM repaint and lazy image loaders
     await new Promise((resolve) => setTimeout(resolve, waitMs));
 
-    // Force frame render
+    // Force animation frame render
     await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
   }
 
@@ -183,36 +218,41 @@ export class ScrollCaptureController {
       color: #ffffff;
       padding: 14px 18px;
       border-radius: 12px;
-      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.1);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       z-index: 2147483647;
       display: flex;
       flex-direction: column;
       gap: 10px;
-      min-width: 240px;
+      min-width: 250px;
       pointer-events: auto;
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(8px);
+      box-sizing: border-box;
     `;
 
     widget.innerHTML = `
       <div style="display: flex; align-items: center; justify-content: space-between;">
-        <span style="font-size: 13px; font-weight: 600; color: #f8fafc;">Capturing Full Page</span>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <div style="width: 8px; height: 8px; border-radius: 50%; background: #3b82f6; animation: pulse 1.5s infinite;"></div>
+          <span style="font-size: 13px; font-weight: 600; color: #f8fafc;">Capturing Full Page</span>
+        </div>
         <button id="snapcraft-cancel-btn" style="
           background: rgba(255,255,255,0.12);
           color: #cbd5e1;
           border: none;
-          padding: 3px 8px;
-          border-radius: 5px;
+          padding: 4px 10px;
+          border-radius: 6px;
           font-size: 11px;
           cursor: pointer;
           font-weight: 500;
+          transition: background 0.15s;
         ">Cancel</button>
       </div>
       <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.15); border-radius: 9999px; overflow: hidden;">
-        <div id="snapcraft-progress-bar" style="width: 0%; height: 100%; background: #3b82f6; border-radius: 9999px; transition: width 0.2s;"></div>
+        <div id="snapcraft-progress-bar" style="width: 5%; height: 100%; background: #3b82f6; border-radius: 9999px; transition: width 0.25s ease-out;"></div>
       </div>
       <div style="display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8;">
-        <span id="snapcraft-progress-text">Preparing capture...</span>
+        <span id="snapcraft-progress-text">Scrolling & stitching...</span>
         <span id="snapcraft-progress-percent">0%</span>
       </div>
     `;
@@ -222,6 +262,8 @@ export class ScrollCaptureController {
 
     const cancelBtn = widget.querySelector<HTMLButtonElement>('#snapcraft-cancel-btn');
     if (cancelBtn) {
+      cancelBtn.onmouseenter = () => { cancelBtn.style.background = 'rgba(255,255,255,0.22)'; };
+      cancelBtn.onmouseleave = () => { cancelBtn.style.background = 'rgba(255,255,255,0.12)'; };
       cancelBtn.onclick = (e) => {
         e.stopPropagation();
         this.cancel();
@@ -256,9 +298,6 @@ export class ScrollCaptureController {
     }
   }
 
-  /**
-   * Check if capture was cancelled
-   */
   public get cancelled(): boolean {
     return this.isCancelled;
   }
@@ -274,6 +313,9 @@ export class ScrollCaptureController {
       top: this.originalScrollY,
       behavior: 'instant' as ScrollBehavior
     });
+    if (document.scrollingElement) {
+      document.scrollingElement.scrollTop = this.originalScrollY;
+    }
   }
 
   private removeProgressWidget() {
